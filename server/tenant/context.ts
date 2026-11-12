@@ -32,7 +32,7 @@ function toContext(resolved: ResolvedTenant): TenantContext {
 }
 
 /**
- * Behind a proxy the original host is in `x-forwarded-host`; Vercel and most
+ * Behind a proxy the original host is in `x-forwarded-host`; Caddy and most
  * load balancers set it. `host` is the direct value.
  */
 function hostFrom(get: (name: string) => string | null) {

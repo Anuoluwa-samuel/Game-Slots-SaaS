@@ -10,6 +10,10 @@ const securityHeaders = [
 const privateHeaders = [{ key: "Cache-Control", value: "private, no-store, max-age=0, must-revalidate" }]
 
 const nextConfig = {
+  // Produces .next/standalone: a self-contained server with only the modules
+  // it actually imports, which is what keeps the container image small enough
+  // to be worth rebuilding on every deploy.
+  output: "standalone",
   // Type errors fail the build — no silent shipping of broken code.
   typescript: { ignoreBuildErrors: false },
   images: { unoptimized: true },

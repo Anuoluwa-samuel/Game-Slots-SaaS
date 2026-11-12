@@ -20,6 +20,7 @@ export {
   rootDomain,
   subdomainOf,
   isPlatformHost,
+  isServableHostname,
   resolveTenantFromHost,
   RESERVED_SUBDOMAINS,
   type ResolvedTenant,

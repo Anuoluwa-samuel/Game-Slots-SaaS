@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { eq } from "drizzle-orm"
 import * as schema from "@/server/db/schema"
-import { devOverrideAllowed, isPlatformHost, normalizeHostname, subdomainOf, resolveTenantFromHost } from "@/server/tenant/resolver"
+import { devOverrideAllowed, isPlatformHost, isServableHostname, normalizeHostname, subdomainOf, resolveTenantFromHost } from "@/server/tenant/resolver"
 import { assertBelongsToArena, assertSameArena, assertArenaId } from "@/server/tenant/guards"
 import { getTenantContextFromRequest, requirePublicTenantFromRequest, requireTenantContextFromRequest } from "@/server/tenant/context"
 import { createTestDb } from "../helpers/db"
@@ -259,5 +259,43 @@ describe("tenant context from a request", () => {
     const tenant = await getTenantContextFromRequest(request)
     expect(tenant?.source).toBe("dev-override")
     expect(tenant?.arena.slug).toBe("lekki")
+  })
+})
+
+describe("which hostnames deserve a certificate", () => {
+  /**
+   * The TLS terminator asks this before issuing. Saying yes to anything would
+   * let a stranger point their DNS here and spend the certificate authority's
+   * rate limit on hostnames this deployment does not serve.
+   */
+  it("serves the platform root and its www form", async () => {
+    expect(await isServableHostname(ROOT, ROOT)).toBe(true)
+    expect(await isServableHostname(`www.${ROOT}`, ROOT)).toBe(true)
+  })
+
+  it("serves a live arena's subdomain", async () => {
+    const arena = await createArena("cert-live")
+    expect(arena.status).toBe("ACTIVE")
+    expect(await isServableHostname(`cert-live.${ROOT}`, ROOT)).toBe(true)
+  })
+
+  it("refuses a subdomain that matches no arena", async () => {
+    expect(await isServableHostname(`nosucharena.${ROOT}`, ROOT)).toBe(false)
+  })
+
+  it("refuses a custom domain until it is verified", async () => {
+    // An unverified row is a claim, not proof — the same rule that decides
+    // whose storefront to serve decides who gets a certificate.
+    const arena = await createArena("cert-domains")
+    await ctx.db.insert(schema.arenaDomains).values({ arenaId: arena.id, hostname: "cert-pending.example.com", status: "PENDING" })
+    await ctx.db.insert(schema.arenaDomains).values({ arenaId: arena.id, hostname: "cert-ok.example.com", status: "VERIFIED" })
+    expect(await isServableHostname("cert-pending.example.com", ROOT)).toBe(false)
+    expect(await isServableHostname("cert-ok.example.com", ROOT)).toBe(true)
+  })
+
+  it("refuses a missing or malformed host rather than defaulting open", async () => {
+    for (const bad of [null, "", "..evil.com", "evil.com/path"]) {
+      expect(await isServableHostname(bad, ROOT), String(bad)).toBe(false)
+    }
   })
 })

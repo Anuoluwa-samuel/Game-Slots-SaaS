@@ -1,45 +1,66 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { BlobStorageAdapter } from "@/server/storage/blob"
+import { S3StorageAdapter } from "@/server/storage/s3"
 import { assertSafeBootstrapAdmin } from "@/server/db/baseline"
 
 // vi.mock is hoisted above these imports, so the adapter sees the mocked SDK.
+const send = vi.fn()
+vi.mock("@aws-sdk/client-s3", () => ({
+  S3Client: class {
+    constructor(public readonly config: unknown) {}
+    send(command: unknown) {
+      return send(command)
+    }
+  },
+  PutObjectCommand: class {
+    constructor(public readonly input: Record<string, unknown>) {}
+  },
+  DeleteObjectCommand: class {
+    constructor(public readonly input: Record<string, unknown>) {}
+  },
+}))
 
-const put = vi.fn()
-const del = vi.fn()
-vi.mock("@vercel/blob", () => ({ put: (...a: unknown[]) => put(...a), del: (...a: unknown[]) => del(...a) }))
+const config = {
+  endpoint: "https://ns.compat.objectstorage.uk-london-1.oraclecloud.com",
+  region: "uk-london-1",
+  bucket: "game-slots-media",
+  accessKeyId: "key",
+  secretAccessKey: "secret",
+}
 
+describe("S3StorageAdapter", () => {
+  beforeEach(() => send.mockReset())
 
-describe("BlobStorageAdapter", () => {
-  beforeEach(() => {
-    put.mockReset()
-    del.mockReset()
+  it("uploads under the given key and returns the object's public url", async () => {
+    const adapter = new S3StorageAdapter(config)
+    const out = await adapter.put("content/f1.jpg", Buffer.from([0xff, 0xd8, 0xff]), "image/jpeg")
+    expect(out).toEqual({ url: `${config.endpoint}/${config.bucket}/content/f1.jpg` })
+    const input = (send.mock.calls[0][0] as { input: Record<string, unknown> }).input
+    expect(input.Bucket).toBe(config.bucket)
+    expect(input.Key).toBe("content/f1.jpg")
+    expect(input.ContentType).toBe("image/jpeg")
+    // Keys carry a UUID and are never reused, so objects are immutable.
+    expect(input.CacheControl).toContain("immutable")
   })
 
-  it("uploads publicly under the given key with no random suffix and returns the CDN url", async () => {
-    put.mockResolvedValue({ url: "https://abc123.public.blob.vercel-storage.com/content/f1.jpg", pathname: "content/f1.jpg" })
-    const adapter = new BlobStorageAdapter("vercel_blob_rw_test")
-    const out = await adapter.put("content/f1.jpg", Buffer.from([0xff, 0xd8, 0xff]), "image/jpeg")
-    expect(out).toEqual({ url: "https://abc123.public.blob.vercel-storage.com/content/f1.jpg" })
-    const [key, body, opts] = put.mock.calls[0]
-    expect(key).toBe("content/f1.jpg")
-    expect(Buffer.isBuffer(body)).toBe(true)
-    expect(opts).toMatchObject({ access: "public", contentType: "image/jpeg", token: "vercel_blob_rw_test", addRandomSuffix: false })
+  it("serves from a separate public url when one is configured", async () => {
+    const adapter = new S3StorageAdapter({ ...config, publicBaseUrl: "https://media.gameslots.com/" })
+    const out = await adapter.put("content/f2.png", Buffer.from([0x89]), "image/png")
+    // Trailing slash trimmed, so the url never doubles up.
+    expect(out.url).toBe("https://media.gameslots.com/content/f2.png")
+  })
+
+  it("addresses buckets by path, which is what OCI's S3 endpoint accepts", () => {
+    const adapter = new S3StorageAdapter(config)
+    const client = (adapter as unknown as { client: { config: { forcePathStyle: boolean } } }).client
+    expect(client.config.forcePathStyle).toBe(true)
   })
 
   it("deletes by key and never claims a local path", async () => {
-    const adapter = new BlobStorageAdapter("vercel_blob_rw_test")
+    const adapter = new S3StorageAdapter(config)
     await adapter.delete("content/f1.jpg")
-    expect(del).toHaveBeenCalledWith("content/f1.jpg", { token: "vercel_blob_rw_test" })
+    const input = (send.mock.calls[0][0] as { input: Record<string, unknown> }).input
+    expect(input).toMatchObject({ Bucket: config.bucket, Key: "content/f1.jpg" })
     expect(adapter.localPath()).toBeNull()
-  })
-
-  it("passes no token when none is configured, so the SDK can use Vercel's OIDC credentials", async () => {
-    put.mockResolvedValue({ url: "https://abc123.public.blob.vercel-storage.com/content/f2.png" })
-    const adapter = new BlobStorageAdapter(undefined)
-    await adapter.put("content/f2.png", Buffer.from([0x89, 0x50]), "image/png")
-    expect(put.mock.calls[0][2]).not.toHaveProperty("token")
-    await adapter.delete("content/f2.png")
-    expect(del).toHaveBeenCalledWith("content/f2.png", undefined)
   })
 })
 

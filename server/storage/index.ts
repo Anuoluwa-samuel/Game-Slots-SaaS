@@ -1,12 +1,15 @@
 import "server-only"
 import { env } from "@/server/env"
 import { LocalStorageAdapter } from "./local"
-import { BlobStorageAdapter } from "./blob"
+import { S3StorageAdapter } from "./s3"
 
 /**
- * Object storage abstraction. Local disk for development and single-server
- * deployments; an S3-compatible adapter implements the same interface for
- * cloud deployments (files are never stored in the database).
+ * Object storage abstraction. Files are never stored in the database.
+ *
+ * `local` is disk, for development and for a single server that keeps its
+ * volume. `s3` is any S3-compatible object store — Oracle Cloud Object
+ * Storage, MinIO, R2 — which is what a deployment behind more than one server,
+ * or one whose disk is not durable, needs.
  */
 export interface StorageAdapter {
   readonly name: string
@@ -19,6 +22,17 @@ export interface StorageAdapter {
 let cached: StorageAdapter | undefined
 export function getStorage(): StorageAdapter {
   if (cached) return cached
-  cached = env.STORAGE_DRIVER === "blob" ? new BlobStorageAdapter(env.BLOB_READ_WRITE_TOKEN) : new LocalStorageAdapter(env.UPLOAD_DIR, "/api/media/files")
+  if (env.STORAGE_DRIVER === "s3") {
+    cached = new S3StorageAdapter({
+      endpoint: env.STORAGE_ENDPOINT!,
+      region: env.STORAGE_REGION,
+      bucket: env.STORAGE_BUCKET!,
+      accessKeyId: env.STORAGE_ACCESS_KEY_ID!,
+      secretAccessKey: env.STORAGE_SECRET_ACCESS_KEY!,
+      publicBaseUrl: env.STORAGE_PUBLIC_URL,
+    })
+  } else {
+    cached = new LocalStorageAdapter(env.UPLOAD_DIR, "/api/media/files")
+  }
   return cached
 }

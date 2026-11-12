@@ -50,7 +50,7 @@ prints what it would do before `--apply`.
 - Managed Postgres with automated backups and point-in-time recovery.
 - **A backup that has never been restored is not a backup.** Restore into a
   scratch database on a schedule and run the tenancy report against it.
-- Uploads live in blob storage; back that up on its own schedule. A database
+- Uploads live in object storage; back that up on its own schedule. A database
   restored to an earlier point will reference objects the store still holds,
   which is the safe direction.
 

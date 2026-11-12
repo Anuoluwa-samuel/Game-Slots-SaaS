@@ -1,0 +1,47 @@
+# Game Slots — TLS termination and reverse proxy.
+#
+# Certificates are issued on demand rather than listed, because the set of
+# hostnames this serves is not known at deploy time: an arena appears at
+# {slug}.{root} the moment somebody registers one, and a venue may later point
+# its own domain here. Caddy asks the app whether a hostname deserves a
+# certificate before issuing one — see /api/internal/tls-check.
+#
+# Without the `ask` endpoint, on-demand TLS would attempt issuance for any
+# hostname pointed at this IP, which is how a stranger's DNS entry exhausts
+# your certificate authority rate limit.
+
+{
+	email {$ACME_EMAIL}
+
+	on_demand_tls {
+		ask http://app:3000/api/internal/tls-check
+		# Lets a burst of new arenas get certificates without letting a flood
+		# of unknown hostnames drive issuance attempts.
+		interval 2m
+		burst 10
+	}
+}
+
+# The platform and every arena, on one site block. `https://` with no hostname
+# matches anything that passes the ask endpoint.
+https:// {
+	tls {
+		on_demand
+	}
+
+	encode zstd gzip
+
+	# The app resolves the tenant from the hostname, so the original Host has
+	# to survive the hop. Caddy forwards it by default; these make the rest of
+	# the original request explicit for anything reading forwarded headers.
+	reverse_proxy app:3000 {
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+# Plain HTTP exists only to send people to HTTPS. The app sets HSTS itself.
+http:// {
+	redir https://{host}{uri} permanent
+}

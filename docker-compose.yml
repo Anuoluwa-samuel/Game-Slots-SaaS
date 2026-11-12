@@ -1,0 +1,91 @@
+# Game Slots on one Oracle Cloud Ampere A1 instance.
+#
+# Four services: Postgres, a one-shot migration, the app, and Caddy in front
+# doing TLS. The app is never exposed directly — only Caddy publishes ports.
+
+name: game-slots
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gameslots}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-gameslots}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Written by the backup timer; see docs/DEPLOYMENT.md.
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gameslots} -d ${POSTGRES_DB:-gameslots}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published. Nothing outside this network has any business reaching
+    # the database, and a Postgres port open to the internet is how a
+    # single-server deployment is lost.
+    expose:
+      - "5432"
+
+  # Runs to completion before the app starts, so the first request never races
+  # a migration and a failed migration stops the deploy instead of producing a
+  # half-upgraded database serving traffic.
+  migrate:
+    build:
+      context: .
+      target: migrate
+    env_file: .env
+    environment:
+      # Built here rather than read from .env so it always names the `db`
+      # service on this network. A hand-written DATABASE_URL pointing at
+      # localhost is the classic way to get "connection refused" from inside a
+      # container — localhost in there is the container, not the host.
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-gameslots}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-gameslots}}
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Same value as the migration, from the same place — the app and the
+      # schema it expects must never be talking to different databases.
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-gameslots}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-gameslots}}
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Issued certificates. Losing this volume means re-issuing every
+      # tenant's certificate at once, which the rate limits will not enjoy.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

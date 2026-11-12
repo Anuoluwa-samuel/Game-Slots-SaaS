@@ -192,3 +192,32 @@ export async function resolveTenantFromHost(
   const only = await soleArena()
   return only ? { arena: only, source: "single-arena" } : null
 }
+
+/**
+ * Whether this deployment would serve a hostname at all.
+ *
+ * Asked by the TLS terminator before it issues a certificate. A multi-tenant
+ * platform cannot list its certificates up front — arenas appear whenever
+ * somebody registers one, and a venue may later point its own domain here — so
+ * the set of hostnames worth a certificate is a query rather than a config
+ * file.
+ *
+ * Narrow on purpose. Answering yes to anything would let a stranger aim their
+ * DNS at this server and burn the certificate authority's rate limit on
+ * hostnames nobody here serves. An unverified custom domain is a claim rather
+ * than proof and gets nothing, which is the same rule tenant resolution
+ * applies when deciding whose storefront to serve.
+ */
+export async function isServableHostname(rawHost: string | null | undefined, root = rootDomain()): Promise<boolean> {
+  const host = normalizeHostname(rawHost)
+  if (!host) return false
+  if (host === root || host === `www.${root}`) return true
+
+  const slug = subdomainOf(host, root)
+  if (slug) {
+    const arena = await arenaBySlug(slug)
+    return Boolean(arena && arena.status !== "ARCHIVED")
+  }
+
+  return Boolean(await arenaByCustomDomain(host))
+}

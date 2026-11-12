@@ -8,7 +8,8 @@ import { reconcilePendingPayments } from "@/server/services/payments"
 
 /**
  * Scheduled job: release expired holds, persist session lifecycle transitions, and re-verify stuck pending payments.
- * Vercel Cron calls it with GET; external schedulers can use POST. Both need `Authorization: Bearer $CRON_SECRET`.
+ * Accepts GET and POST so any scheduler can call it — a systemd timer, a
+ * container sidecar, cron. Both need `Authorization: Bearer $CRON_SECRET`.
  */
 const handler = route(async (req) => {
   const auth = req.headers.get("authorization") ?? ""

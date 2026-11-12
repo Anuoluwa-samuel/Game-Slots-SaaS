@@ -1,0 +1,16 @@
+# Anything the build does not need, or must never be baked into an image.
+node_modules
+.next
+.git
+.env
+.env.local
+.data
+storage/uploads
+backups
+tests
+playwright-report
+test-results
+.shots
+docs
+*.md
+!README.md

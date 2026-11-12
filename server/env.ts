@@ -8,7 +8,7 @@ import { z } from "zod"
  */
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  APP_URL: z.string().url().default("http://localhost:4000"),
+  APP_URL: z.string().url().default("http://localhost:4100"),
   APP_NAME: z.string().default("Game Slots"),
   /**
    * The domain arena subdomains hang off: `{slug}.APP_ROOT_DOMAIN`. Defaults
@@ -38,11 +38,17 @@ const schema = z.object({
   PAYSTACK_PUBLIC_KEY: z.string().optional(),
 
   // Media storage
-  // local: disk (development, single server). blob: Vercel Blob (serverless hosts have no persistent disk).
-  STORAGE_DRIVER: z.enum(["local", "blob"]).default("local"),
-  // Vercel connects stores with OIDC (BLOB_STORE_ID + rotating token); a static read-write token is the fallback elsewhere.
-  BLOB_STORE_ID: z.string().optional(),
-  BLOB_READ_WRITE_TOKEN: z.string().optional(),
+  // local: disk — development, and a single server with a durable volume.
+  // s3:    any S3-compatible object store (Oracle Cloud Object Storage, MinIO, R2).
+  STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
+  /** e.g. https://<namespace>.compat.objectstorage.<region>.oraclecloud.com */
+  STORAGE_ENDPOINT: z.string().url().optional(),
+  STORAGE_REGION: z.string().default("us-ashburn-1"),
+  STORAGE_BUCKET: z.string().optional(),
+  STORAGE_ACCESS_KEY_ID: z.string().optional(),
+  STORAGE_SECRET_ACCESS_KEY: z.string().optional(),
+  /** Public read URL, when it differs from `${endpoint}/${bucket}`. */
+  STORAGE_PUBLIC_URL: z.string().url().optional(),
   UPLOAD_DIR: z.string().default("./storage/uploads"),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
 
@@ -99,17 +105,27 @@ export const env = {
 if (enforce && env.PAYMENT_PROVIDER === "mock") {
   throw new Error("PAYMENT_PROVIDER=mock is not allowed in production")
 }
-// Vercel (and any serverless host) has no persistent disk: the embedded
-// database and local uploads would silently vanish between requests.
-const onVercel = Boolean(process.env.VERCEL)
-if (onVercel && !isBuildPhase && !env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is required on Vercel (the embedded database cannot persist there). Add a Postgres database, e.g. Neon via Vercel Storage.")
+// The embedded database is a development convenience: it is a file on local
+// disk, so it cannot be shared between processes and does not survive a
+// container being replaced. Production runs real Postgres.
+if (enforce && !env.DATABASE_URL) {
+  throw new Error("DATABASE_URL is required in production: the embedded database cannot persist there.")
 }
-if (onVercel && !isBuildPhase && env.STORAGE_DRIVER !== "blob") {
-  throw new Error("STORAGE_DRIVER=blob is required on Vercel (local uploads would be lost). Add a Blob store via Vercel Storage.")
+if (env.STORAGE_DRIVER === "s3" && !isBuildPhase) {
+  const missing = (["STORAGE_ENDPOINT", "STORAGE_BUCKET", "STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY"] as const).filter(
+    (key) => !env[key]
+  )
+  if (missing.length > 0) {
+    throw new Error(`STORAGE_DRIVER=s3 needs ${missing.join(", ")}. See docs/DEPLOYMENT.md for the Object Storage setup.`)
+  }
 }
-if (env.STORAGE_DRIVER === "blob" && !env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN && !isBuildPhase) {
-  throw new Error("STORAGE_DRIVER=blob needs Blob credentials: connect a Blob store to this project in Vercel (sets BLOB_STORE_ID), or set BLOB_READ_WRITE_TOKEN")
+// Local uploads live on the container's own disk. That is fine for one server
+// with a mounted volume and silently lossy for anything else, so it is stated
+// rather than assumed.
+if (enforce && env.STORAGE_DRIVER === "local" && !process.env.ALLOW_LOCAL_UPLOADS) {
+  throw new Error(
+    "STORAGE_DRIVER=local in production stores uploads on the container's disk, which is lost when it is replaced. Use s3, or set ALLOW_LOCAL_UPLOADS=1 if the upload directory is a persistent volume."
+  )
 }
 if (env.PAYMENT_PROVIDER === "paystack" && !env.PAYSTACK_SECRET_KEY) {
   throw new Error("PAYSTACK_SECRET_KEY is required when PAYMENT_PROVIDER=paystack")
